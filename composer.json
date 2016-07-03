@@ -1,0 +1,23 @@
+{
+  "name": "mesut/php-postgresql",
+  "description": "Php Postgresql Class",
+  "keywords": ["postgresql", "database"],
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Mesut Aksak",
+      "email": "mesut.aksak@gmail.com"
+    }
+  ],
+  "require": {
+    "php": ">=5.6"
+  },
+  "require-dev":{
+    "phpunit/phpunit": "^5.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "PhpPostgresql\\": "src/"
+    }
+  }
+}

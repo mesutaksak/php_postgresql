@@ -11,9 +11,9 @@ class PgConnection
     protected $connection;
 
     /**
-     * @var resource|false|null
+     * @var int Transaction count
      */
-    protected $transactions;
+    protected $transactions = 0;
     
     /**
      * @var bool
@@ -27,11 +27,16 @@ class PgConnection
     protected $queries;
 
     /**
+     * @var float Query executing time ms
+     */
+    protected $queryTime;
+
+    /**
      * Fetch Mode Default 0 is Object,  PGSQL_ASSOC = 1, PGSQL_NUM = 2, PGSQL_BOTH = 3
      * @var int
      */
     public $fetchMode = 0;
-
+    
     /**
      * Places params in query build executable sql string 
      * this is for debug able to see query
@@ -39,18 +44,30 @@ class PgConnection
      * @param $params
      * @return mixed
      */
-    public function buildSql($query, $params)
+    private function buildSql($query, $params)
     {
-        //TODO: should be better
-        $query_string = $query;
+        if(is_array($params) && count($params) > 0){
+            $query_string = $query;
+            foreach($params as $index => $value){
+                $value_str = is_null($value) ? 'NULL' : sprintf("E'%s'", str_replace( '\\', '\\\\', $value ));
+                $query_string = str_replace('$' .($index+1), $value_str, $query_string);
+            }
 
-        foreach($params as $index => $value){
-            
-            $value_str = is_numeric($value) ? $value : sprintf("'%s'", $value);
-            $query_string = str_replace('$' .($index+1), $value_str, $query_string);
+            return $query_string;
         }
 
-        return $query_string;
+        return $query;
+    }
+
+    private function logQuery($query, $params, $info = [])
+    {
+        if(!isset($info['prepared'])){
+            $info['query'] = $this->buildSql($query, $params);
+        }
+        $info['params'] = $params;
+        $info['queryTime'] = $this->getQueryTime();
+
+        $this->queries[] = $info;
     }
     
     /**
@@ -92,7 +109,6 @@ class PgConnection
 
     public function __destruct()
     {
-        $this->commit();
         $this->close();
     }
 
@@ -119,16 +135,20 @@ class PgConnection
      */
     public function exec($query, $params = null)
     {
-        if($this->debug) {
-            $this->queries[] = $this->buildSql($query, $params);
+
+        $startTime = microtime(true);
+
+        $result = is_null($params)
+            ? pg_query($this->connection, $query)
+            : pg_query_params($this->connection, $query, $params);
+
+        $this->queryTime = microtime(true) - $startTime;
+
+        if($this->debug){
+            $this->logQuery($query, $params);
         }
-        
-        if($params === null) {
-            
-            return pg_query($this->connection, $query);
-        }
-        
-        return pg_query_params($this->connection, $query, $params);
+
+        return $result;
     }
 
     /**
@@ -136,9 +156,13 @@ class PgConnection
      * @return bool|resource işlem başarılı olursa hareket nesnesi alsi durumda false döner
      */
     public function begin(){
-        $this->transactions = !!$this->exec('BEGIN');
+        $result = $this->exec('BEGIN');
+
+        if($result){
+            $this->transactions++;
+        }
         
-        return $this->transactions;
+        return $result;
     }
 
     /**
@@ -146,13 +170,18 @@ class PgConnection
      * @return bool success result 
      */
     public function commit(){
-        $ended = false;
+
         if($this->transactions){
-            $ended = $this->exec('COMMIT');
-            $this->transactions = !$ended;
+            $result = $this->exec('COMMIT');
+            $this->transactions--;
+            if($this->transactions < 0){
+                $this->transactions = 0;
+            }
+            
+            return $result;
         }
         
-        return !!$ended;
+        return false;
     }
 
     /**
@@ -160,13 +189,46 @@ class PgConnection
      * @return bool işlem başarı durumu
      */
     public function rollback(){
-        $rollbackResult = false;
-        if($this->islemler){
-            $rollbackResult = $this->exec('ROLLBACK');
-            $this->islemler = !$rollbackResult;
+        if($this->transactions){
+            $result = $this->exec('ROLLBACK');
+            $this->transactions--;
+            if($this->transactions < 0){
+                $this->transactions = 0;
+            }
+
+            return $result;
         }
-        
-        return !!$rollbackResult;
+
+        return false;
+    }
+
+    /**
+     * For single row result like (SUM , COUNT, MAX) queries and Non query results statement like UPDATE, DELETE, INSERT
+     * @param string $query
+     * @param null $params
+     * @return mixed if result is resource then returns first row from result set, if statement non query returns affected rows count
+     * on error return FALSE
+     */
+    public function statement($query, $params = null)
+    {
+        $result = false;
+
+        $resource = $this->exec($query, $params);
+
+        if($resource){
+            if(is_resource($resource)){
+                if($this->fetchMode == 0){
+                    $result = pg_fetch_object($resource);
+                } else {
+                    $result = pg_fetch_array($resource, null, $this->fetchMode);
+                }
+                pg_free_result($resource);
+            } else {
+                $result = pg_affected_rows($this->connection);
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -189,34 +251,17 @@ class PgConnection
 
     public function insert($query, $params = null)
     {
-        $result = false;
-
-        $resource = $this->exec($query, $params);
-
-        if($resource){
-            if(is_resource($resource)){
-                if($this->fetchMode == 0){
-                    $result = pg_fetch_object($resource);
-                } else {
-                    $result = pg_fetch_array($resource, null, $this->fetchMode);
-                }
-                pg_free_result($resource);
-            } else {
-                $result = pg_affected_rows($this->connection);
-            }
-        }
-
-        return $result;
+        return $this->statement($query, $params);
     }
 
     public function update($query, $params = null)
     {
-        return $this->insert($query, $params);
+        return $this->statement($query, $params);
     }
 
     public function delete($query, $params = null)
     {
-        return $this->insert($query, $params);
+        return $this->statement($query, $params);
     }
 
     /**
@@ -234,5 +279,72 @@ class PgConnection
     public function lastError(){
         return pg_last_error($this->connection);
     }
-    
+
+    /**
+     * Returns number of affected records
+     * @return int
+     */
+    public function affectedRows()
+    {
+        return pg_affected_rows($this->connection);
+    }
+
+    /**
+     * @param string $name
+     * @param string $query
+     * @return resource
+     */
+    public function prepare($name, $query)
+    {
+        $startTime = microtime(true);
+        $result = pg_prepare($this->connection, $name, $query);
+        $this->queryTime = microtime(true) - $startTime;
+
+        if($this->debug){
+            $this->logQuery($query, null, ['name' => $name]);
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param $name
+     * @param $params
+     * @return PgReader|bool
+     */
+    public function executePrepared($name , $params)
+    {
+        $startTime = microtime(true);
+        $result = pg_execute($this->connection, $name, $params);
+        $this->queryTime = microtime(true) - $startTime;
+
+        if($this->debug){
+            $this->logQuery($name, $params, ['name' => $name, 'prepared' => true]);
+        }
+
+        if(is_resource($result)) {
+
+            return new PgReader($result, $this->fetchMode);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Returns executed queries for watching
+     * @return array|null
+     */
+    public function getQueries()
+    {
+        return $this->queries;
+    }
+
+    /**
+     * Returns last query executing time
+     * @return float
+     */
+    public function getQueryTime()
+    {
+        return round($this->queryTime, 8);
+    }
 }

@@ -14,14 +14,14 @@ class PgConnection
      * @var int Transaction count
      */
     protected $transactions = 0;
-    
+
     /**
      * @var bool
      */
     protected $debug;
 
     /**
-     * Executed Queries 
+     * Executed Queries
      * @var null|array
      */
     protected $queries;
@@ -36,12 +36,12 @@ class PgConnection
      * @var int
      */
     public $fetchMode = 0;
-    
+
     /**
-     * Places params in query build executable sql string 
+     * Places params in query build executable sql string
      * this is for debug able to see query
-     * @param $query
-     * @param $params
+     * @param string $query prepared statement name
+     * @param array $params query paramerters array
      * @return mixed
      */
     private function buildSql($query, $params)
@@ -59,6 +59,11 @@ class PgConnection
         return $query;
     }
 
+    /**
+     * @param string $query prepared statement name
+     * @param array $params query paramerters array
+     * @param array $info extra information for log
+     */
     private function logQuery($query, $params, $info = [])
     {
         if(!isset($info['prepared'])){
@@ -69,7 +74,34 @@ class PgConnection
 
         $this->queries[] = $info;
     }
-    
+
+    /**
+     * Returns statement execute result
+     * For (SUM , COUNT, MAX, RETURNING * after INSERT|UPDATE|DELETE)  return single row,
+     * For Non query results statement like UPDATE, DELETE, INSERT return affected rows
+     * @param $resource
+     * @return array|bool|int|object
+     */
+    private function statementResult($resource)
+    {
+        $result = false;
+
+        if($resource){
+            if(is_resource($resource)){
+                if($this->fetchMode == 0){
+                    $result = pg_fetch_object($resource);
+                } else {
+                    $result = pg_fetch_array($resource, null, $this->fetchMode);
+                }
+                pg_free_result($resource);
+            } else {
+                $result = pg_affected_rows($this->connection);
+            }
+        }
+
+        return $result;
+    }
+
     /**
      * Returns active connection link
      * @return resource|false|null
@@ -92,7 +124,7 @@ class PgConnection
     public function __construct($settings)
     {
         $connectionString =
-             ' host='		. $settings['host']
+            ' host='		. $settings['host']
             .' port='		. $settings['port']
             .' dbname='		. $settings['dbname']
             .' user='		. $settings['user']
@@ -129,8 +161,8 @@ class PgConnection
 
     /**
      * Executes statements
-     * @param $query
-     * @param null $params
+     * @param string $query prepared statement name
+     * @param array|null $params query paramerters array
      * @return resource
      */
     public function exec($query, $params = null)
@@ -155,19 +187,19 @@ class PgConnection
      * Starts database transaction
      * @return bool|resource işlem başarılı olursa hareket nesnesi alsi durumda false döner
      */
-    public function begin(){
+    public function beginTransaction(){
         $result = $this->exec('BEGIN');
 
         if($result){
             $this->transactions++;
         }
-        
+
         return $result;
     }
 
     /**
      * Commits database transaction
-     * @return bool success result 
+     * @return bool success result
      */
     public function commit(){
 
@@ -177,10 +209,10 @@ class PgConnection
             if($this->transactions < 0){
                 $this->transactions = 0;
             }
-            
+
             return $result;
         }
-        
+
         return false;
     }
 
@@ -188,7 +220,7 @@ class PgConnection
      * Rollbacks database transaction
      * @return bool işlem başarı durumu
      */
-    public function rollback(){
+    public function rollBack(){
         if($this->transactions){
             $result = $this->exec('ROLLBACK');
             $this->transactions--;
@@ -204,37 +236,22 @@ class PgConnection
 
     /**
      * For single row result like (SUM , COUNT, MAX) queries and Non query results statement like UPDATE, DELETE, INSERT
-     * @param string $query
-     * @param null $params
+     * @param string $query prepared statement name
+     * @param array|null $params query paramerters array
      * @return mixed if result is resource then returns first row from result set, if statement non query returns affected rows count
      * on error return FALSE
      */
     public function statement($query, $params = null)
     {
-        $result = false;
-
         $resource = $this->exec($query, $params);
 
-        if($resource){
-            if(is_resource($resource)){
-                if($this->fetchMode == 0){
-                    $result = pg_fetch_object($resource);
-                } else {
-                    $result = pg_fetch_array($resource, null, $this->fetchMode);
-                }
-                pg_free_result($resource);
-            } else {
-                $result = pg_affected_rows($this->connection);
-            }
-        }
-
-        return $result;
+        return $this->statementResult($resource);
     }
 
     /**
      * Executes SELECT statement and returns @see PgReader Object or FALSE if errror accour
-     * @param $query
-     * @param null $params
+     * @param string $query prepared statement name
+     * @param array|null $params query paramerters array
      * @return false|PgReader
      */
     public function select($query, $params = null)
@@ -249,16 +266,31 @@ class PgConnection
         return $result;
     }
 
+    /**
+     * @param string $query prepared statement name
+     * @param array|null $params query paramerters array
+     * @return mixed
+     */
     public function insert($query, $params = null)
     {
         return $this->statement($query, $params);
     }
 
+    /**
+     * @param string $query prepared statement name
+     * @param array|null $params query paramerters array
+     * @return mixed
+     */
     public function update($query, $params = null)
     {
         return $this->statement($query, $params);
     }
 
+    /**
+     * @param string $query prepared statement name
+     * @param array|null $params query paramerters array
+     * @return mixed
+     */
     public function delete($query, $params = null)
     {
         return $this->statement($query, $params);
@@ -290,8 +322,8 @@ class PgConnection
     }
 
     /**
-     * @param string $name
-     * @param string $query
+     * @param string $name prepared statement name
+     * @param string $query query string will be prepare for execute later
      * @return resource
      */
     public function prepare($name, $query)
@@ -308,11 +340,30 @@ class PgConnection
     }
 
     /**
-     * @param $name
-     * @param $params
+     * Executes prepared statement
+     * @see $this->statement
+     * @param string $name prepared statement name
+     * @param array $params query paramerters array
+     * @return mixed if result is resource then returns first row from result set,
+     * if statement non query returns affected rows count on error return FALSE
+     */
+    public function executeStatement($name , $params)
+    {
+        $startTime = microtime(true);
+        $result = pg_execute($this->connection, $name, $params);
+        $this->queryTime = microtime(true) - $startTime;
+
+        return $this->statementResult($result);
+    }
+
+    /**
+     * Executes prepared Select query
+     * @see $this->select
+     * @param string $name prepared statement name
+     * @param array $params query paramerters array
      * @return PgReader|bool
      */
-    public function executePrepared($name , $params)
+    public function executeSelect($name , $params)
     {
         $startTime = microtime(true);
         $result = pg_execute($this->connection, $name, $params);
@@ -328,6 +379,42 @@ class PgConnection
         }
 
         return $result;
+    }
+
+    /**
+     * Executes prepared INSERT statement
+     * @see $this->insert
+     * @param string $name prepared statement name
+     * @param array $params query paramerters array
+     * @return mixed
+     */
+    public function executeInsert($name , $params)
+    {
+        return $this->executeStatement($name, $params);
+    }
+
+    /**
+     * Executes prepared UPDATE statement
+     * @see $this->update
+     * @param string $name prepared statement name
+     * @param array $params query paramerters array
+     * @return mixed
+     */
+    public function executeUpdate($name, $params)
+    {
+        return $this->executeStatement($name, $params);
+    }
+
+    /**
+     * Executes prepared DELETE statement
+     * @see $this->delete
+     * @param string $name prepared statement name
+     * @param array $params query paramerters array
+     * @return mixed
+     */
+    public function executeDelete($name, $params)
+    {
+        return $this->executeStatement($name, $params);
     }
 
     /**

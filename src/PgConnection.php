@@ -353,6 +353,10 @@ class PgConnection
         $result = pg_execute($this->connection, $name, $params);
         $this->queryTime = microtime(true) - $startTime;
 
+        if($this->debug){
+            $this->logQuery($name, $params, ['name' => $name, 'prepared' => true]);
+        }
+
         return $this->statementResult($result);
     }
 

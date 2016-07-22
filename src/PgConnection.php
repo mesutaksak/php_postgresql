@@ -163,6 +163,7 @@ class PgConnection
      * @param string $query prepared statement name
      * @param array|null $params query paramerters array
      * @return resource
+     * @throws \ErrorException when pg_query or pg_query_params result is false
      */
     public function exec($query, $params = null)
     {
@@ -328,6 +329,7 @@ class PgConnection
      * @param string $name prepared statement name
      * @param string $query query string will be prepare for execute later
      * @return resource
+     * @throws \ErrorException when pg_prepare result is false
      */
     public function prepare($name, $query)
     {
@@ -337,6 +339,10 @@ class PgConnection
 
         if($this->debug){
             $this->logQuery($query, null, ['name' => $name]);
+        }
+
+        if($result === false){
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         return $result;
@@ -349,6 +355,7 @@ class PgConnection
      * @param array $params query paramerters array
      * @return mixed if result is resource then returns first row from result set,
      * if statement non query returns affected rows count on error return FALSE
+     * @throws \ErrorException when pg_execute result is false
      */
     public function executeStatement($name , $params)
     {
@@ -358,6 +365,10 @@ class PgConnection
 
         if($this->debug){
             $this->logQuery($name, $params, ['name' => $name, 'prepared' => true]);
+        }
+
+        if($result === false){
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         return $this->statementResult($result);

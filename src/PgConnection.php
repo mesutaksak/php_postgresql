@@ -132,7 +132,6 @@ class PgConnection
             .' options=\'--client_encoding=UTF8\'' ;
 
         $this->connection = pg_connect($connectionString);
-        $this->islemler = false;
         $this->debug = isset($settings['debug']) ? $settings['debug'] : false;
         if($this->debug){
             $this->queries = [];
@@ -178,6 +177,10 @@ class PgConnection
 
         if($this->debug){
             $this->logQuery($query, $params);
+        }
+
+        if($result === false){
+            throw new \ErrorException(pg_last_error ($this->connection));
         }
 
         return $result;

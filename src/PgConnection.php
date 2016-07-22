@@ -180,7 +180,7 @@ class PgConnection
         }
 
         if($result === false){
-            throw new \ErrorException(pg_last_error ($this->connection));
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         return $result;

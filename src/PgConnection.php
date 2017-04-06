@@ -36,6 +36,11 @@ class PgConnection
      * @var int
      */
     public $fetchMode = 0;
+    /**
+     * When sql error accours generate ErrorException
+     * @var bool
+     */
+    public $stopOnError = true;
 
     /**
      * Places params in query build executable sql string
@@ -48,7 +53,9 @@ class PgConnection
     {
         if(is_array($params) && count($params) > 0){
             $query_string = $query;
-            foreach($params as $index => $value){
+
+            for($index = count($params)-1; $index >= 0; $index--){
+                $value = $params[$index];
                 $value_str = is_null($value) ? 'NULL' : sprintf("E'%s'", str_replace( '\\', '\\\\', $value ));
                 $query_string = str_replace('$' .($index+1), $value_str, $query_string);
             }
@@ -57,6 +64,39 @@ class PgConnection
         }
 
         return $query;
+    }
+
+    /**
+     * @return string
+     */
+    public function debugOutput()
+    {
+        $html = [];
+        foreach ($this->queries as $index => $query) {
+            $html[] = '<table border="1" style="margin: 10px 0px;">';
+            $html[] = '<thead><tr><td colspan="2">Sorgu '.($index+1).'</td></tr></thead>';
+            $html[] = '<tbody>';
+            foreach ($query as $prop => $value){
+                $html[] = '<tr>';
+                $html[] = '<td>'.$prop.'</td>';
+                if(is_array($value)){
+                    $html[] = '<td>';
+                    foreach ($value as $prmKey => $prmVal){
+
+                        $prmVal_ = is_null($prmVal) ? 'null' : $prmVal;
+                        $html[] = '<strong>$'.($prmKey+1).' = </strong>'. $prmVal_. '<br/>';
+                    }
+                    $html[] = '</td>';
+                } else {
+                    $html[] = '<td>'.$value.'</td>';
+                }
+                $html[] = '</tr>';
+            }
+            $html[] = '</tbody>';
+            $html[] = '</table>';
+        }
+
+        return join("\n", $html);
     }
 
     /**
@@ -88,10 +128,16 @@ class PgConnection
 
         if($resource){
             if(is_resource($resource)){
-                if($this->fetchMode == 0){
-                    $result = pg_fetch_object($resource);
-                } else {
-                    $result = pg_fetch_array($resource, null, $this->fetchMode);
+                if(pg_num_rows($resource) > 0)
+                {
+                    if($this->fetchMode == 0){
+                        $result = pg_fetch_object($resource);
+                    } else {
+                        $result = pg_fetch_array($resource, null, $this->fetchMode);
+                    }
+                }
+                else {
+                    $result = 0;
                 }
                 pg_free_result($resource);
             } else {
@@ -120,6 +166,7 @@ class PgConnection
      *   $settings['debug']
      *
      * @param $settings array Connection settings
+     * @throws \ErrorException Veritabanı baglantısı yapılamazsa
      */
     public function __construct($settings)
     {
@@ -129,15 +176,33 @@ class PgConnection
             .' dbname='		. $settings['dbname']
             .' user='		. $settings['user']
             .' password='	. $settings['password']
-            .' options=\'--client_encoding=UTF8\'' ;
+            ." options='--client_encoding=UTF8'" ;
 
-        $this->connection = pg_connect($connectionString);
+        if($this->stopOnError)
+        {
+            $this->connection = @pg_connect($connectionString);
+
+            if(!$this->connection){
+
+                $hata = error_get_last();
+                if($hata !== null){
+                    throw new \ErrorException($hata['message']);
+                }
+
+                throw new \ErrorException('Connection Error!');
+            }
+        }
+        else
+        {
+            $this->connection = pg_connect($connectionString);
+        }
+
         $this->debug = isset($settings['debug']) ? $settings['debug'] : false;
+
         if($this->debug){
             $this->queries = [];
         }
     }
-
     public function __destruct()
     {
         $this->close();
@@ -147,7 +212,8 @@ class PgConnection
      * Closes active connection if exists
      * @return bool returns True if closed a open connection , otherwise return false when not closed any connection
      */
-    public function close(){
+    public function close()
+    {
         $closed = false;
         if($this->connection){
             if(is_resource($this->connection) && pg_close($this->connection)){
@@ -162,16 +228,24 @@ class PgConnection
      * Executes statements
      * @param string $query prepared statement name
      * @param array|null $params query paramerters array
-     * @return resource
+     * @return resource|bool
+     * @throws \ErrorException
      */
     public function exec($query, $params = null)
     {
 
         $startTime = microtime(true);
 
-        $result = is_null($params)
-            ? pg_query($this->connection, $query)
-            : pg_query_params($this->connection, $query, $params);
+        if($this->stopOnError){
+            $result = is_null($params)
+                ? @pg_query($this->connection, $query)
+                : @pg_query_params($this->connection, $query, $params);
+        }
+        else {
+            $result = is_null($params)
+                ? pg_query($this->connection, $query)
+                : pg_query_params($this->connection, $query, $params);
+        }
 
         $this->queryTime = microtime(true) - $startTime;
 
@@ -179,8 +253,8 @@ class PgConnection
             $this->logQuery($query, $params);
         }
 
-        if($result === false){
-            throw new \ErrorException(pg_last_error ($this->connection));
+        if($this->stopOnError && $result === false){
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         return $result;
@@ -255,7 +329,7 @@ class PgConnection
      * Executes SELECT statement and returns @see PgReader Object or FALSE if errror accour
      * @param string $query prepared statement name
      * @param array|null $params query paramerters array
-     * @return false|PgReader
+     * @return PgReader|false
      */
     public function select($query, $params = null)
     {
@@ -328,15 +402,25 @@ class PgConnection
      * @param string $name prepared statement name
      * @param string $query query string will be prepare for execute later
      * @return resource
+     * @throws \ErrorException
      */
     public function prepare($name, $query)
     {
         $startTime = microtime(true);
-        $result = pg_prepare($this->connection, $name, $query);
+        if($this->stopOnError){
+            $result = @pg_prepare($this->connection, $name, $query);
+        } else {
+            $result = pg_prepare($this->connection, $name, $query);
+        }
+
         $this->queryTime = microtime(true) - $startTime;
 
         if($this->debug){
             $this->logQuery($query, null, ['name' => $name]);
+        }
+
+        if($this->stopOnError && $result === false){
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         return $result;
@@ -349,15 +433,23 @@ class PgConnection
      * @param array $params query paramerters array
      * @return mixed if result is resource then returns first row from result set,
      * if statement non query returns affected rows count on error return FALSE
+     * @throws \ErrorException
      */
     public function executeStatement($name , $params)
     {
         $startTime = microtime(true);
-        $result = pg_execute($this->connection, $name, $params);
+        $result = $this->stopOnError
+            ? @pg_execute($this->connection, $name, $params)
+            : pg_execute($this->connection, $name, $params);
+
         $this->queryTime = microtime(true) - $startTime;
 
         if($this->debug){
             $this->logQuery($name, $params, ['name' => $name, 'prepared' => true]);
+        }
+
+        if($this->stopOnError && $result === false){
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         return $this->statementResult($result);
@@ -369,15 +461,23 @@ class PgConnection
      * @param string $name prepared statement name
      * @param array $params query paramerters array
      * @return PgReader|bool
+     * @throws \ErrorException
      */
     public function executeSelect($name , $params)
     {
         $startTime = microtime(true);
-        $result = pg_execute($this->connection, $name, $params);
+        $result = $this->stopOnError
+            ? @pg_execute($this->connection, $name, $params)
+            : pg_execute($this->connection, $name, $params);
+
         $this->queryTime = microtime(true) - $startTime;
 
         if($this->debug){
             $this->logQuery($name, $params, ['name' => $name, 'prepared' => true]);
+        }
+
+        if($this->stopOnError && $result === false){
+            throw new \ErrorException(pg_last_error($this->connection));
         }
 
         if(is_resource($result)) {
@@ -440,5 +540,14 @@ class PgConnection
     public function getQueryTime()
     {
         return round($this->queryTime, 8);
+    }
+
+    /**
+     * Sets default scheme for active connection
+     * @param string $scheme
+     */
+    public function setDefaultScheme($scheme)
+    {
+        $this->exec('SET search_path TO "'.$scheme.'"');
     }
 }

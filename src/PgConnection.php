@@ -141,7 +141,7 @@ class PgConnection
                 }
                 pg_free_result($resource);
             } else {
-                $result = pg_affected_rows($this->connection);
+                $result = pg_affected_rows($resource);
             }
         }
 
